@@ -1,0 +1,102 @@
+services:
+  kafka:
+    image: apache/kafka:latest
+    container_name: kafka
+    ports:
+      - "9092:9092"  # Exposing the broker's listener port
+      - "9093:9093"  # Exposing the controller listener port
+    environment:
+      # Listeners for client and controller connections
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+
+      # KRaft mode settings
+      KAFKA_CONTROLLER_QUORUM_VOTERS: "1@localhost:9093"
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+
+      # Storage and replication settings
+      KAFKA_LOG_DIRS: /tmp/kafka-logs
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+    networks:
+      - kafka_network
+
+  kafka-connect:
+    build:
+      context: .
+      dockerfile: ./kafka-connect/Dockerfile
+    container_name: kafka-connect
+    environment:
+      BOOTSTRAP_SERVERS: 'kafka:9092'
+      GROUP_ID: '1'
+      CONFIG_STORAGE_TOPIC: 'docker-connect-configs'
+      OFFSET_STORAGE_TOPIC: 'docker-connect-offsets'
+      STATUS_STORAGE_TOPIC: 'docker-connect-status'
+      CONNECT_REST_ADVERTISED_HOST_NAME: 'kafka-connect'
+      CONNECT_PLUGIN_PATH: '/kafka/connect'
+      CONNECT_REST_PORT: '8083'
+    ports:
+      - 8083:8083
+    depends_on:
+      - kafka
+    networks:
+      - kafka_network
+    volumes:
+      - ./log4j.properties:/kafka/log4j.properties  # Mount log4j configuration file
+
+  create-topics:
+    image: apache/kafka:latest
+    depends_on:
+      - kafka
+    entrypoint: >
+      /bin/sh -c "
+      until nc -z kafka 9092;
+      do
+        echo 'Waiting for Kafka to be ready...';
+        sleep 5;
+      done;
+      /opt/kafka/bin/kafka-topics.sh --create --topic dbserver1.database.customer --bootstrap-server kafka:9092 --partitions 1 --replication-factor 1 &&
+      /opt/kafka/bin/kafka-topics.sh --create --topic dbserver1 --bootstrap-server kafka:9092 --partitions 1 --replication-factor 1;
+      echo 'Topics created successfully.';"
+    networks:
+      - kafka_network
+
+  kafka-watch:
+    image: apache/kafka:latest
+    container_name: kafka-watch
+    depends_on:
+      - kafka
+    networks:
+      - kafka_network
+    entrypoint: >
+      /bin/sh -c "
+      echo 'Waiting for topic dbserver1.database.customer to be available...';
+      while ! /opt/kafka/bin/kafka-topics.sh --list --bootstrap-server kafka:9092 | grep -q '^dbserver1\.database\.customer$'; do
+        echo 'Topic dbserver1.database.customer not found yet. Waiting...';
+        sleep 5;
+      done;
+      echo 'Topic dbserver1.database.customer exists. Starting consumer...';
+      /opt/kafka/bin/kafka-console-consumer.sh --bootstrap-server kafka:9092 --topic dbserver1.database.customer --from-beginning --property print.key=true;"
+
+  mysql:
+    image: mysql:latest
+    container_name: mysql
+    ports:
+      - "3306:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: root_password
+      MYSQL_DATABASE: database
+      MYSQL_USER: debezium_user
+      MYSQL_PASSWORD: debezium_password
+    volumes:
+      - ./init_db.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - kafka_network
+
+networks:
+  kafka_network:
+    driver: bridge
