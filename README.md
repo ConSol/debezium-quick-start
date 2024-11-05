@@ -32,4 +32,4 @@ docker compose up
 ```
 
 ### 3. Checkout this blog post for more
-https://blog.consol.de/TODO
+https://blog.consol.de/software-engineering/debezium/
